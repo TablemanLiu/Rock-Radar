@@ -20,11 +20,26 @@
         body { 
             font-family: "HarmonyOS Sans SC", "PingFang SC", "Lantinghei SC", "Microsoft YaHei", "HanHei SC", "Helvetica Neue", "Open Sans", Arial, sans-serif; 
             overflow: hidden; 
-            background: linear-gradient(135deg, var(--bg-color-1), var(--bg-color-2), #050508, #111);
+            background-color: #000;
+            background-image: linear-gradient(135deg, var(--bg-color-1), var(--bg-color-2), #050508, #111);
             background-size: 400% 400%;
             animation: gradientBG 30s ease infinite; 
             color: #fff; 
             transition: all 2s ease; 
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #000;
+            z-index: -1;
+        }
+
+        body.particles-disabled {
+            background-image: none !important;
+            animation: none !important;
         }
 
         #particles-canvas {
@@ -83,6 +98,7 @@
             flex-direction: column; 
             justify-content: center; 
             padding: 0 10px;
+            margin-left: 5vw; /* 向右移动一点 */
         }
 
         .band-info-box {
@@ -406,6 +422,8 @@
             // 是否根据 points 中定义的位数自动控制显示精度（例如写 8.5 就显示 8.5，写 8 就显示整数）
             USE_AUTO_PRECISION: true, 
             SHOW_SCORE_UNDER_NAME: true, // 是否将评分数值显示在维度名称下方
+            LABEL_FONT_SIZE: 28,          // 维度名称字体大小 (px)
+            SCORE_FONT_SIZE: 24,          // 评分数值字体大小 (px)
         };
 
         function getNextColor() {
@@ -497,15 +515,16 @@
         let isGlobalTimelineDragging = false;
         let globalCurrentTime = 0; // ms
         let isParticlesEnabled = true;
+        let particleFadeLevel = 1; // 1 为完全显示，0 为完全消失
         let isPaused = true; 
         let isStarted = false; // 是否已经按过空格开始
         let lastTimestamp = 0;
 
         let currentThemeColor = "#00ffff";
         let targetThemeColor = "#00ffff"; 
-        let currentScores = [0, 0, 0, 0, 0, 0];
-        let startScores = [0, 0, 0, 0, 0, 0];
-        let targetScores = [0, 0, 0, 0, 0, 0];
+        let currentScores = [...CONFIG.MIN_SCORES];
+        let startScores = [...CONFIG.MIN_SCORES];
+        let targetScores = [...CONFIG.MIN_SCORES];
         let animProgress = 1;
         let animStartTime = 0;
         let startTime = Date.now();
@@ -560,7 +579,7 @@
             }
             draw() {
                 pCtx.save();
-                pCtx.globalAlpha = Math.max(0, this.life * this.alphaMult);
+                pCtx.globalAlpha = Math.max(0, this.life * this.alphaMult * particleFadeLevel);
                 let gradSize = this.size * this.bloomMult;
                 let gradient = pCtx.createRadialGradient(this.x, this.y, 0, this.x, this.y, gradSize);
                 gradient.addColorStop(0, hexToRgbA(currentThemeColor, 0.7));
@@ -710,7 +729,7 @@
             // 特殊动画逻辑：如果该乐队在 mvplist 中，数值动画从 0 开始缓慢放大
             // 如果不在 mvplist 中（普通乐队），则从上一个乐队的分数平滑过渡
             if (isFirst || isMvp) {
-                startScores = [0, 0, 0, 0, 0, 0];
+                startScores = [...CONFIG.MIN_SCORES];
             } else {
                 startScores = [...currentScores];
             }
@@ -800,7 +819,9 @@
             ctx.beginPath();
             for (let i = 0; i < CONFIG.VERTEX_COUNT; i++) {
                 const dimMaxScore = CONFIG.BASE_MAX_SCORES[i];
-                const r = (currentScores[i] / dimMaxScore) * maxR;
+                const dimMinScore = CONFIG.MIN_SCORES[i];
+                const range = Math.max(0.0001, dimMaxScore - dimMinScore);
+                const r = ((currentScores[i] - dimMinScore) / range) * maxR;
                 const angle = (i * (360 / CONFIG.VERTEX_COUNT) - 90) * Math.PI / 180;
                 const x = centerX + r * Math.cos(angle);
                 const y = centerY + r * Math.sin(angle);
@@ -860,13 +881,13 @@
                 const valStr = formatRadarValue(currentScores[i], i);
                 if (CONFIG.SHOW_SCORE_UNDER_NAME) {
                     // 第一行：维度名
-                    ctx.font = 'bold 28px "Orbitron", sans-serif';
+                    ctx.font = `bold ${CONFIG.LABEL_FONT_SIZE}px "Orbitron", sans-serif`;
                     ctx.fillText(CONFIG.DIM_NAMES[i], x, y - 18);
                     // 第二行：数值 (字体稍微变细/变小一点作为区分)
-                    ctx.font = 'normal 24px "Orbitron", sans-serif';
+                    ctx.font = `normal ${CONFIG.SCORE_FONT_SIZE}px "Orbitron", sans-serif`;
                     ctx.fillText(valStr, x, y + 18);
                 } else {
-                    ctx.font = 'bold 28px "Orbitron", sans-serif';
+                    ctx.font = `bold ${CONFIG.LABEL_FONT_SIZE}px "Orbitron", sans-serif`;
                     ctx.fillText(`${CONFIG.DIM_NAMES[i]} ${valStr}`, x, y);
                 }
             }
@@ -917,8 +938,19 @@
                 if (t >= 1) animProgress = 1;
             }
 
+            // 粒子淡入淡出动画 (1000ms 过渡)
+            const targetFade = isParticlesEnabled ? 1 : 0;
+            if (particleFadeLevel !== targetFade) {
+                const fadeStep = deltaTime / 1000;
+                if (particleFadeLevel < targetFade) {
+                    particleFadeLevel = Math.min(1, particleFadeLevel + fadeStep);
+                } else {
+                    particleFadeLevel = Math.max(0, particleFadeLevel - fadeStep);
+                }
+            }
+
             // 4. 渲染
-            if (isParticlesEnabled) {
+            if (particleFadeLevel > 0) {
                 pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
                 particles.forEach(p => { p.update(); p.draw(); });
             } else {
@@ -1016,7 +1048,11 @@
             const audio = document.getElementById("bgMusic");
             if (e.key.toLowerCase() === 'p') {
                 isParticlesEnabled = !isParticlesEnabled;
-                if (!isParticlesEnabled) pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+                if (isParticlesEnabled) {
+                    document.body.classList.remove("particles-disabled");
+                } else {
+                    document.body.classList.add("particles-disabled");
+                }
             }
             if (e.key === " ") { // 空格暂停/播放 或 开始准备页
                 if (!isStarted) {

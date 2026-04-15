@@ -20,11 +20,26 @@
         body { 
             font-family: "HarmonyOS Sans SC", "PingFang SC", "Lantinghei SC", "Microsoft YaHei", "HanHei SC", "Helvetica Neue", "Open Sans", Arial, sans-serif; 
             overflow: hidden; 
-            background: linear-gradient(135deg, var(--bg-color-1), var(--bg-color-2), #050508, #111);
+            background-color: #000;
+            background-image: linear-gradient(135deg, var(--bg-color-1), var(--bg-color-2), #050508, #111);
             background-size: 400% 400%;
             animation: gradientBG 30s ease infinite; 
             color: #fff; 
             transition: all 2s ease; 
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #000;
+            z-index: -1;
+        }
+
+        body.particles-disabled {
+            background-image: none !important;
+            animation: none !important;
         }
 
         #particles-canvas {
@@ -83,6 +98,7 @@
             flex-direction: column; 
             justify-content: center; 
             padding: 0 10px;
+            margin-left: 5vw; /* 向右移动一点 */
         }
 
         .band-info-box {
@@ -409,6 +425,8 @@
             LABEL_MARGIN: 80, // 维度名称距离雷达图外圈的距离 (px)，默认 80
             USE_AUTO_PRECISION: true, // 是否根据 points 中定义的位数自动控制显示精度（例如写 8.5 就显示 8.5，写 8 就显示整数）
             SHOW_SCORE_UNDER_NAME: false, // 是否将评分数值显示在维度名称下方
+            LABEL_FONT_SIZE: 28,          // 维度名称字体大小 (px)
+            SCORE_FONT_SIZE: 24,          // 评分数值字体大小 (px)
         };
 
         function getNextColor() {
@@ -503,18 +521,22 @@
         let isGlobalTimelineDragging = false;
         let globalCurrentTime = 0; // ms
         let isParticlesEnabled = true;
+        let particleFadeLevel = 1; // 1 为完全显示，0 为完全消失
         let isPaused = true; 
         let isStarted = false; // 是否已经按过空格开始
         let lastTimestamp = 0;
 
         let currentThemeColor = "#00ffff";
         let targetThemeColor = "#00ffff"; 
-        let currentScores = [0, 0, 0, 0, 0, 0];
-        let startScores = [0, 0, 0, 0, 0, 0];
-        let targetScores = [0, 0, 0, 0, 0, 0];
+        let currentScores = [...CONFIG.MIN_SCORES];
+        let startScores = [...CONFIG.MIN_SCORES];
+        let targetScores = [...CONFIG.MIN_SCORES];
         let animProgress = 1;
         let animStartTime = 0;
         let startTime = Date.now();
+
+        let activeHighlightDim = -1;
+        let dimHighlightLevels = new Array(CONFIG.VERTEX_COUNT).fill(0);
 
         const radarCanvas = document.getElementById("radarCanvas");
         const ctx = radarCanvas.getContext("2d");
@@ -566,7 +588,7 @@
             }
             draw() {
                 pCtx.save();
-                pCtx.globalAlpha = Math.max(0, this.life * this.alphaMult);
+                pCtx.globalAlpha = Math.max(0, this.life * this.alphaMult * particleFadeLevel);
                 let gradSize = this.size * this.bloomMult;
                 let gradient = pCtx.createRadialGradient(this.x, this.y, 0, this.x, this.y, gradSize);
                 gradient.addColorStop(0, hexToRgbA(currentThemeColor, 0.7));
@@ -716,7 +738,7 @@
             // 特殊动画逻辑：如果该乐队在 mvplist 中，数值动画从 0 开始缓慢放大
             // 如果不在 mvplist 中（普通乐队），则从上一个乐队的分数平滑过渡
             if (isFirst || isMvp) {
-                startScores = [0, 0, 0, 0, 0, 0];
+                startScores = [...CONFIG.MIN_SCORES];
             } else {
                 startScores = [...currentScores];
             }
@@ -804,12 +826,17 @@
 
             // 雷达多边形 (允许超出 maxR，每个维度的基准线单独映射配置)
             ctx.beginPath();
+            let polyPoints = [];
             for (let i = 0; i < CONFIG.VERTEX_COUNT; i++) {
                 const dimMaxScore = CONFIG.BASE_MAX_SCORES[i];
-                const r = (currentScores[i] / dimMaxScore) * maxR;
+                const dimMinScore = CONFIG.MIN_SCORES[i];
+                // 根据 MIN_SCORES 计算有效显示范围，MIN_SCORES 对应原点 (0%位置)
+                const range = Math.max(0.0001, dimMaxScore - dimMinScore);
+                const r = ((currentScores[i] - dimMinScore) / range) * maxR;
                 const angle = (i * (360 / CONFIG.VERTEX_COUNT) - 90) * Math.PI / 180;
                 const x = centerX + r * Math.cos(angle);
                 const y = centerY + r * Math.sin(angle);
+                polyPoints.push({x, y});
                 if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }
             ctx.closePath();
@@ -818,6 +845,24 @@
             ctx.shadowBlur = 0;
             ctx.fillStyle = hexToRgbA(currentThemeColor, 0.25);
             ctx.fill();
+
+            // 顶点强调内部发光（限制在多边形内部）
+            ctx.save();
+            ctx.clip(); // 限制后续绘制只在多边形内
+            for (let i = 0; i < CONFIG.VERTEX_COUNT; i++) {
+                let hl = dimHighlightLevels[i];
+                if (hl > 0.01) {
+                    const pt = polyPoints[i];
+                    // 在对应顶点处绘制径向渐变光晕
+                    const glowRadius = maxR * 0.8 * hl;
+                    const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, glowRadius);
+                    grad.addColorStop(0, hexToRgbA(currentThemeColor, 0.8 * hl));
+                    grad.addColorStop(1, hexToRgbA(currentThemeColor, 0));
+                    ctx.fillStyle = grad;
+                    ctx.fill(); 
+                }
+            }
+            ctx.restore();
 
             // 激光边缘效果 - 更加激进的多重高亮叠加
             ctx.save();
@@ -858,23 +903,36 @@
             ctx.fillStyle = '#fff';
             for (let i = 0; i < CONFIG.VERTEX_COUNT; i++) {
                 const angle = (i * (360 / CONFIG.VERTEX_COUNT) - 90) * Math.PI / 180;
-                let x = centerX + (maxR + CONFIG.LABEL_MARGIN) * Math.cos(angle);
-                let y = centerY + (maxR + CONFIG.LABEL_MARGIN) * Math.sin(angle);
+                let hl = dimHighlightLevels[i];
+                let marginOffset = hl * 20; // 突出的距离
+                let x = centerX + (maxR + CONFIG.LABEL_MARGIN + marginOffset) * Math.cos(angle);
+                let y = centerY + (maxR + CONFIG.LABEL_MARGIN + marginOffset) * Math.sin(angle);
                 ctx.textAlign = Math.abs(Math.cos(angle)) < 0.1 ? 'center' : (Math.cos(angle) > 0 ? 'left' : 'right');
                 ctx.textBaseline = 'middle';
                 
+                ctx.save();
+                if (hl > 0.01) {
+                    ctx.shadowBlur = 15 + hl * 15;
+                    ctx.shadowColor = currentThemeColor;
+                    ctx.fillStyle = "#fff";
+                }
+
                 const valStr = formatRadarValue(currentScores[i], i);
                 if (CONFIG.SHOW_SCORE_UNDER_NAME) {
                     // 第一行：维度名
-                    ctx.font = 'bold 28px "Orbitron", sans-serif';
-                    ctx.fillText(CONFIG.DIM_NAMES[i], x, y - 18);
+                    const fontSizeName = CONFIG.LABEL_FONT_SIZE + hl * 12;
+                    ctx.font = `bold ${fontSizeName}px "Orbitron", "HarmonyOS Sans SC", sans-serif`;
+                    ctx.fillText(CONFIG.DIM_NAMES[i], x, y - 18 - hl * 5);
                     // 第二行：数值 (字体稍微变细/变小一点作为区分)
-                    ctx.font = 'normal 24px "Orbitron", sans-serif';
-                    ctx.fillText(valStr, x, y + 18);
+                    const fontSizeScore = CONFIG.SCORE_FONT_SIZE + hl * 12;
+                    ctx.font = `normal ${fontSizeScore}px "Orbitron", sans-serif`;
+                    ctx.fillText(valStr, x, y + 18 + hl * 5);
                 } else {
-                    ctx.font = 'bold 28px "Orbitron", sans-serif';
+                    const fontSize = CONFIG.LABEL_FONT_SIZE + hl * 12;
+                    ctx.font = `bold ${fontSize}px "Orbitron", "HarmonyOS Sans SC", sans-serif`;
                     ctx.fillText(`${CONFIG.DIM_NAMES[i]} ${valStr}`, x, y);
                 }
+                ctx.restore();
             }
             ctx.restore();
         }
@@ -923,8 +981,25 @@
                 if (t >= 1) animProgress = 1;
             }
 
+            // 顶点强调动画
+            for (let i = 0; i < CONFIG.VERTEX_COUNT; i++) {
+                const targetLevel = (i === activeHighlightDim) ? 1 : 0;
+                dimHighlightLevels[i] += (targetLevel - dimHighlightLevels[i]) * Math.min(deltaTime * 0.01, 1);
+            }
+
+            // 粒子淡入淡出动画 (1000ms 过渡)
+            const targetFade = isParticlesEnabled ? 1 : 0;
+            if (particleFadeLevel !== targetFade) {
+                const fadeStep = deltaTime / 1000;
+                if (particleFadeLevel < targetFade) {
+                    particleFadeLevel = Math.min(1, particleFadeLevel + fadeStep);
+                } else {
+                    particleFadeLevel = Math.max(0, particleFadeLevel - fadeStep);
+                }
+            }
+
             // 4. 渲染
-            if (isParticlesEnabled) {
+            if (particleFadeLevel > 0) {
                 pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
                 particles.forEach(p => { p.update(); p.draw(); });
             } else {
@@ -1008,6 +1083,16 @@
         }
 
         window.addEventListener("keydown", (e) => {
+            // 数字键强调效果 (1-8 键，0 键取消)
+            if (e.key >= '1' && e.key <= '8') {
+                const dimIndex = parseInt(e.key) - 1;
+                if (dimIndex < CONFIG.VERTEX_COUNT) {
+                    activeHighlightDim = dimIndex;
+                }
+            } else if (e.key === '0') {
+                activeHighlightDim = -1;
+            }
+
             if (e.key === "f" || e.key === "F" || e.key === "F11") {
                 // 如果是 F11，阻止默认行为以使用我们自定义的全屏逻辑控制 UI 隐藏
                 if (e.key === "F11") e.preventDefault();
@@ -1022,7 +1107,11 @@
             const audio = document.getElementById("bgMusic");
             if (e.key.toLowerCase() === 'p') {
                 isParticlesEnabled = !isParticlesEnabled;
-                if (!isParticlesEnabled) pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+                if (isParticlesEnabled) {
+                    document.body.classList.remove("particles-disabled");
+                } else {
+                    document.body.classList.add("particles-disabled");
+                }
             }
             if (e.key === " ") { // 空格暂停/播放 或 开始准备页
                 if (!isStarted) {
